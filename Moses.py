@@ -11,12 +11,19 @@ import requests
 import streamlit as st
 
 # ---------------------------------------------------------------------------
-# 1. Page Configuration
+# 1. Page Configuration & App Link
 # ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="IN GOD WE TRUST — Internet Starlink",
     page_icon="📡",
     layout="centered",
+)
+
+# App URL attached to notifications for one-tap admin portal access
+APP_URL = (
+    st.secrets.get("APP_URL", "https://igwt-wifi.streamlit.app")
+    if hasattr(st, "secrets")
+    else "https://igwt-wifi.streamlit.app"
 )
 
 NTFY_TOPIC = "igwt_wifi_moise_2026"
@@ -60,10 +67,6 @@ def generate_test_passwords(n=10):
 
 @st.cache_resource
 def get_store():
-    """
-    Process-wide singleton shared across all user and admin sessions.
-    Backed by JSON files for persistence across server restarts.
-    """
     return {
         "lock": threading.Lock(),
         "orders": _load(ORDERS_FILE, []),
@@ -93,29 +96,25 @@ def save_log():
     _save(LOG_FILE, store["notif_log"])
 
 
-def pop_vault_code():
-    """Safely retrieves and consumes the next available password code."""
-    with store["lock"]:
-        if store["vault"]:
-            code = store["vault"].pop(0)
-            save_vault()
-            return code
-        return "STAR-1234"
-
-
 # ---------------------------------------------------------------------------
-# 3. Notifications
+# 3. Notifications with Web Link
 # ---------------------------------------------------------------------------
-def send_ntfy_push(client_name, plan, total, ref_id):
+def send_ntfy_push(client_name, plan, total, ref_id, pay_method):
     message = (
-        f"Client: {client_name}\nPass: {plan} ({total:,} FC)\nRef: {ref_id}"
+        f"Client: {client_name}\n"
+        f"Pass: {plan} ({total:,} FC)\n"
+        f"Paiement: {pay_method}\n"
+        f"Ref: {ref_id}\n\n"
+        f"Lien: {APP_URL}"
     ).replace(",", " ")
+
     payload = {
         "topic": NTFY_TOPIC,
         "message": message,
         "title": "IGWT — Nouvelle Commande !",
         "priority": 5,
         "tags": ["moneybag", "wifi"],
+        "click": APP_URL,
     }
     entry = {
         "time": datetime.datetime.now().strftime("%H:%M:%S"),
@@ -145,7 +144,7 @@ def send_ntfy_push(client_name, plan, total, ref_id):
     return ok
 
 
-def send_telegram_push(client_name, plan, total, ref_id):
+def send_telegram_push(client_name, plan, total, ref_id, pay_method):
     token = st.secrets.get("TELEGRAM_BOT_TOKEN") if hasattr(st, "secrets") else None
     chat_id = st.secrets.get("TELEGRAM_CHAT_ID") if hasattr(st, "secrets") else None
     if not token or not chat_id:
@@ -153,8 +152,13 @@ def send_telegram_push(client_name, plan, total, ref_id):
 
     text = (
         f"📡 IGWT — Nouvelle Commande !\n"
-        f"Client: {client_name}\nPass: {plan} ({total:,} FC)\nRef: {ref_id}"
+        f"Client: {client_name}\n"
+        f"Pass: {plan} ({total:,} FC)\n"
+        f"Mode: {pay_method}\n"
+        f"Ref: {ref_id}\n\n"
+        f"🔗 Ouvrir le portail: {APP_URL}"
     ).replace(",", " ")
+
     entry = {
         "time": datetime.datetime.now().strftime("%H:%M:%S"),
         "client": client_name,
@@ -178,9 +182,9 @@ def send_telegram_push(client_name, plan, total, ref_id):
     return ok
 
 
-def notify_new_order(client_name, plan, total, ref_id):
-    send_ntfy_push(client_name, plan, total, ref_id)
-    send_telegram_push(client_name, plan, total, ref_id)
+def notify_new_order(client_name, plan, total, ref_id, pay_method):
+    send_ntfy_push(client_name, plan, total, ref_id, pay_method)
+    send_telegram_push(client_name, plan, total, ref_id, pay_method)
 
 
 def get_base64_image(image_path):
@@ -194,12 +198,21 @@ def get_base64_image(image_path):
 logo_b64 = get_base64_image("IGWT_logo.png")
 
 # ---------------------------------------------------------------------------
-# 4. Custom Styling
+# 4. Custom Styling (Bright, High-Contrast Text Fix)
 # ---------------------------------------------------------------------------
 st.markdown(
     """
     <style>
-    .stApp { background-color: #0b132b !important; color-scheme: dark; }
+    .stApp { background-color: #0b132b !important; color: #ffffff !important; }
+
+    p, span, label, div, h1, h2, h3, h4, h5, h6 {
+        color: #ffffff !important;
+        opacity: 1 !important;
+    }
+    
+    .stCaption, [data-testid="stCaptionContainer"] p {
+        color: #cbd5e1 !important;
+    }
 
     .header-card {
         background: linear-gradient(135deg, #0a1128 0%, #1c2541 100%);
@@ -272,12 +285,19 @@ st.markdown(
     [data-testid="stTextInput"] input::placeholder { color: #94a3b8 !important; }
     [data-testid="stWidgetLabel"] p,
     [data-testid="stMarkdownContainer"] p,
-    label { color: #e2e8f0 !important; }
-    [data-testid="stRadio"] label { color: #e2e8f0 !important; }
+    label { color: #f8fafc !important; font-weight: 500; }
+    [data-testid="stRadio"] label { color: #f8fafc !important; }
     </style>
 """,
     unsafe_allow_html=True,
 )
+
+# Passive auto-refresh for clients waiting for status approval
+if "current_order_id" in st.session_state:
+    st.markdown(
+        '<meta http-equiv="refresh" content="6">',
+        unsafe_allow_html=True,
+    )
 
 # ---------------------------------------------------------------------------
 # 5. Header Component
@@ -319,57 +339,53 @@ st.markdown(
 
 tab_client, tab_admin = st.tabs(["🛒 Acheter un Pass", "🔒 Espace Administrateur"])
 
-
 # ---------------------------------------------------------------------------
-# 6. Fragment for Non-Disruptive Client Polling
-# ---------------------------------------------------------------------------
-@st.fragment(run_every="6s")
-def render_order_status(order_idx):
-    with store["lock"]:
-        order = store["orders"][order_idx] if order_idx < len(store["orders"]) else None
-
-    if order is None:
-        if "current_order_id" in st.session_state:
-            del st.session_state.current_order_id
-        st.rerun()
-
-    with st.container(border=True):
-        st.write("### 🧾 Statut de votre commande")
-        st.write(f"**Client :** {order['Client']}")
-        st.write(f"**Forfait :** {order['Forfait']}")
-        st.write(f"**Référence SMS :** `{order['Ref']}`")
-
-        if order["Status"] == "Pending":
-            st.warning("⏳ **En attente de confirmation par Moïse...**")
-            st.info(
-                "Dès que Moïse aura vérifié le paiement Mobile Money, votre code"
-                " apparaîtra automatiquement ici."
-            )
-            if st.button("🔄 Rafraîchir le statut"):
-                st.rerun()
-        elif order["Status"] == "Approved":
-            st.success("✅ **Paiement confirmé ! Voici votre code d'accès Wi-Fi :**")
-            st.markdown(
-                f'<div class="code-box">{order["Code"]}</div>',
-                unsafe_allow_html=True,
-            )
-            st.caption("💡 *Saisissez ce code sur la page de connexion Wi-Fi Starlink.*")
-            if st.button("🛒 Passer une autre commande"):
-                del st.session_state.current_order_id
-                st.rerun()
-        else:
-            st.error("❌ Cette commande a été refusée. Veuillez contacter Moïse.")
-            if st.button("🛒 Passer une nouvelle commande"):
-                del st.session_state.current_order_id
-                st.rerun()
-
-
-# ---------------------------------------------------------------------------
-# 7. Client Tab View
+# 6. Client Tab View
 # ---------------------------------------------------------------------------
 with tab_client:
     if "current_order_id" in st.session_state:
-        render_order_status(st.session_state.current_order_id)
+        order_idx = st.session_state.current_order_id
+        with store["lock"]:
+            order = (
+                store["orders"][order_idx]
+                if order_idx < len(store["orders"])
+                else None
+            )
+
+        if order is None:
+            del st.session_state.current_order_id
+            st.rerun()
+
+        with st.container(border=True):
+            st.write("### 🧾 Statut de votre commande")
+            st.write(f"**Client :** {order['Client']}")
+            st.write(f"**Forfait :** {order['Forfait']}")
+            st.write(f"**Mode de Paiement :** {order.get('Mode', 'M-Pesa')}")
+            st.write(f"**Référence :** `{order['Ref']}`")
+
+            if order["Status"] == "Pending":
+                st.warning("⏳ **En attente de confirmation par Moïse...**")
+                st.info(
+                    "Dès que Moïse aura validé votre demande, votre code d'accès"
+                    " apparaîtra automatiquement ici."
+                )
+                if st.button("🔄 Rafraîchir le statut"):
+                    st.rerun()
+            elif order["Status"] == "Approved":
+                st.success("✅ **Demande confirmée ! Voici votre code d'accès Wi-Fi :**")
+                st.markdown(
+                    f'<div class="code-box">{order["Code"]}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.caption("💡 *Saisissez ce code sur la page de connexion Wi-Fi Starlink.*")
+                if st.button("🛒 Passer une autre commande"):
+                    del st.session_state.current_order_id
+                    st.rerun()
+            else:
+                st.error("❌ Cette commande a été refusée. Veuillez contacter Moïse.")
+                if st.button("🛒 Passer une nouvelle commande"):
+                    del st.session_state.current_order_id
+                    st.rerun()
     else:
         with st.container(border=True):
             st.write("### 1. 🎫 Choisir un Pass Wi-Fi")
@@ -387,34 +403,60 @@ with tab_client:
             st.markdown(f"#### 💵 Total à payer : **{unit_price:,} FC**".replace(",", " "))
 
         with st.container(border=True):
-            st.write("### 2. 📲 Effectuer le Paiement M-Pesa")
-            st.write("Envoyez le montant exact au numéro M-Pesa ci-dessous :")
-            st.markdown(
-                '<div class="number-display-box">0833890033</div>',
-                unsafe_allow_html=True,
+            st.write("### 2. 💳 Mode de Paiement")
+            payment_mode = st.radio(
+                "Choisissez comment vous allez payer :",
+                [
+                    "📱 Mobile Money (M-Pesa)",
+                    "💵 Espèces (Paiement Cash en main)",
+                ],
             )
-            st.caption("💡 *Saisissez ce numéro dans votre menu M-Pesa (*112#).*")
+
+            if "M-Pesa" in payment_mode:
+                st.write("Envoyez le montant exact au numéro M-Pesa ci-dessous :")
+                st.markdown(
+                    '<div class="number-display-box">0833890033</div>',
+                    unsafe_allow_html=True,
+                )
+                st.caption("💡 *Saisissez ce numéro dans votre menu M-Pesa (*112#).*")
+            else:
+                st.info(
+                    "💵 **Option Cash :** Cliquez simplement sur le bouton ci-dessous pour"
+                    " envoyer la demande. Moïse validera dès qu'il recevra les espèces."
+                )
 
         with st.container(border=True):
             st.write("### 3. 📝 Valider la Commande")
             c_name = st.text_input("Votre Nom & Prénom :", placeholder="Ex: Jean Marc")
             c_phone = st.text_input("Votre N° de Téléphone :", placeholder="Ex: 0812345678")
-            c_ref = st.text_input(
-                "Numéro / ID de Référence du SMS M-Pesa :",
-                placeholder="Ex: PP260807.1345.H12345",
+
+            if "M-Pesa" in payment_mode:
+                c_ref = st.text_input(
+                    "Numéro / ID de Référence du SMS M-Pesa :",
+                    placeholder="Ex: PP260807.1345.H12345",
+                )
+            else:
+                c_ref = "CASH"
+
+            btn_label = (
+                "🚀 Soumettre mon Paiement M-Pesa"
+                if "M-Pesa" in payment_mode
+                else "🚀 Demander le Pass (Paiement Cash)"
             )
 
-            if st.button("🚀 Soumettre mon Paiement"):
-                if c_name and c_phone and c_ref:
+            if st.button(btn_label):
+                if c_name and c_phone and (c_ref if "M-Pesa" in payment_mode else True):
                     clean_plan = (
                         "12H" if "12" in plan_choice else ("24H" if "24" in plan_choice else "48H")
                     )
+                    pay_type = "M-Pesa" if "M-Pesa" in payment_mode else "Cash"
                     new_order = {
                         "Heure": datetime.datetime.now().strftime("%H:%M:%S"),
                         "Client": c_name,
                         "Phone": c_phone,
                         "Forfait": clean_plan,
                         "Total": unit_price,
+                        "Mode": pay_type,
                         "Ref": c_ref,
                         "Status": "Pending",
                         "Code": "",
@@ -424,13 +466,13 @@ with tab_client:
                         save_orders()
                         st.session_state.current_order_id = len(store["orders"]) - 1
 
-                    notify_new_order(c_name, clean_plan, unit_price, c_ref)
+                    notify_new_order(c_name, clean_plan, unit_price, c_ref, pay_type)
                     st.rerun()
                 else:
                     st.warning("⚠️ Veuillez remplir tous les champs du formulaire.")
 
 # ---------------------------------------------------------------------------
-# 8. Admin Tab View
+# 7. Admin Tab View
 # ---------------------------------------------------------------------------
 with tab_admin:
     st.write("### 🔒 Espace Administrateur")
@@ -441,7 +483,7 @@ with tab_admin:
     )
     pwd = st.text_input("Mot de passe de Moïse :", type="password")
 
-    if pwd == admin_password:
+    if pwd.lower() == admin_password.lower():
         st.success("🔓 Accès autorisé. Bienvenue, Moïse !")
         st.write("---")
         if st.button("🔄 Actualiser"):
@@ -459,7 +501,8 @@ with tab_admin:
                     st.warning(
                         f"👤 **Client :** {order['Client']} ({order['Phone']})  \n"
                         f"🎫 **Forfait :** {order['Forfait']} — **{order['Total']:,} FC**  \n"
-                        f"🧾 **SMS Référence :** `{order['Ref']}`"
+                        f"💳 **Mode :** {order.get('Mode', 'M-Pesa')}  \n"
+                        f"🧾 **Référence :** `{order['Ref']}`"
                     )
 
                     default_code = store["vault"][0] if store["vault"] else "STAR-1234"
@@ -481,6 +524,7 @@ with tab_admin:
                                     "Heure": order["Heure"],
                                     "Date": datetime.date.today().strftime("%d/%m/%Y"),
                                     "Forfait": order["Forfait"],
+                                    "Mode": order.get("Mode", "M-Pesa"),
                                     "Total (FC)": order["Total"],
                                 }
                             )
@@ -508,7 +552,7 @@ with tab_admin:
         else:
             st.caption("Aucune notification envoyée pour le moment.")
         if st.button("📨 Envoyer une notification de test"):
-            notify_new_order("TEST", "12H", 1500, "TEST-REF")
+            notify_new_order("TEST", "12H", 1500, "TEST-REF", "Cash")
             st.rerun()
 
         st.write("---")
@@ -524,10 +568,4 @@ with tab_admin:
         st.write("### 📈 Bilan des Revenus")
         if store["sales"]:
             df = pd.DataFrame(store["sales"])
-            st.metric("Total Encaissé", f"{df['Total (FC)'].sum():,} FC".replace(",", " "))
-            st.dataframe(df, use_container_width=True)
-            if st.button("🗑️ Effacer l'historique"):
-                with store["lock"]:
-                    store["sales"] = []
-                    save_sales()
-                st.rerun()
+            st.metric("Total Encaiss
