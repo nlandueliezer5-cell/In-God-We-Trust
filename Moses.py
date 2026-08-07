@@ -20,7 +20,7 @@ st.set_page_config(
 )
 
 NTFY_TOPIC = "igwt_wifi_moise_2026"
-NTFY_PUBLISH_URL = "https://ntfy.sh"  # JSON publish endpoint (topic goes in the body)
+NTFY_PUBLISH_URL = "https://ntfy.sh"
 
 DATA_DIR = "igwt_data"
 ORDERS_FILE = os.path.join(DATA_DIR, "orders.json")
@@ -32,7 +32,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
-# 2. Persistence helpers
+# 2. Persistence Helpers & Shared Store
 # ---------------------------------------------------------------------------
 def _load(path, default):
     if os.path.exists(path):
@@ -61,11 +61,8 @@ def generate_test_passwords(n=10):
 @st.cache_resource
 def get_store():
     """
-    A process-wide singleton, shared by EVERY client and admin session on
-    this server instance (unlike st.session_state, which is private to a
-    single browser tab). This is what lets an order placed on a client's
-    phone actually show up in Moïse's admin tab. Backed by JSON files so
-    data survives an app restart too.
+    Process-wide singleton shared across all user and admin sessions.
+    Backed by JSON files for persistence across server restarts.
     """
     return {
         "lock": threading.Lock(),
@@ -96,20 +93,20 @@ def save_log():
     _save(LOG_FILE, store["notif_log"])
 
 
+def pop_vault_code():
+    """Safely retrieves and consumes the next available password code."""
+    with store["lock"]:
+        if store["vault"]:
+            code = store["vault"].pop(0)
+            save_vault()
+            return code
+        return "STAR-1234"
+
+
 # ---------------------------------------------------------------------------
 # 3. Notifications
 # ---------------------------------------------------------------------------
 def send_ntfy_push(client_name, plan, total, ref_id):
-    """
-    Publishes via ntfy's JSON endpoint instead of raw HTTP headers.
-
-    Why the old version failed: HTTP headers must stay within the
-    Latin-1/ASCII range. The previous code put an emoji and an em dash
-    straight into the `Title` header, which is invalid — requests either
-    silently mangled it or ntfy's server rejected it, so nothing ever
-    arrived. A JSON body has no such restriction and is UTF-8 safe end
-    to end.
-    """
     message = (
         f"Client: {client_name}\nPass: {plan} ({total:,} FC)\nRef: {ref_id}"
     ).replace(",", " ")
@@ -149,18 +146,6 @@ def send_ntfy_push(client_name, plan, total, ref_id):
 
 
 def send_telegram_push(client_name, plan, total, ref_id):
-    """
-    Optional second channel — recommended, since ntfy.sh is a free public
-    broker with no delivery guarantee. To enable, add to
-    .streamlit/secrets.toml:
-
-        TELEGRAM_BOT_TOKEN = "123456:ABC-..."
-        TELEGRAM_CHAT_ID = "123456789"
-
-    (Create a bot via @BotFather, then message it once and fetch your
-    chat_id from https://api.telegram.org/bot<TOKEN>/getUpdates.)
-    Safely does nothing if secrets aren't configured.
-    """
     token = st.secrets.get("TELEGRAM_BOT_TOKEN") if hasattr(st, "secrets") else None
     chat_id = st.secrets.get("TELEGRAM_CHAT_ID") if hasattr(st, "secrets") else None
     if not token or not chat_id:
@@ -209,12 +194,7 @@ def get_base64_image(image_path):
 logo_b64 = get_base64_image("IGWT_logo.png")
 
 # ---------------------------------------------------------------------------
-# 4. CSS
-#    The base dark theme now lives in .streamlit/config.toml, which forces
-#    every native widget (inputs, dataframe, metric, radio, tabs) into this
-#    palette regardless of the visitor's OS light/dark setting. This CSS
-#    only needs to style the custom elements and reinforce contrast on a
-#    few native pieces that themes don't fully cover.
+# 4. Custom Styling
 # ---------------------------------------------------------------------------
 st.markdown(
     """
@@ -283,7 +263,6 @@ st.markdown(
         box-shadow: 0 4px 12px rgba(0, 180, 216, 0.3) !important;
     }
 
-    /* Force readable text/inputs regardless of any residual browser theming */
     [data-testid="stTextInput"] input {
         background-color: #1c2541 !important;
         color: #ffffff !important;
@@ -295,23 +274,13 @@ st.markdown(
     [data-testid="stMarkdownContainer"] p,
     label { color: #e2e8f0 !important; }
     [data-testid="stRadio"] label { color: #e2e8f0 !important; }
-
-    .designer-footer {
-        text-align: center;
-        font-size: 12px;
-        color: #94a3b8 !important;
-        margin-top: 40px;
-        padding-top: 15px;
-        border-top: 1px solid rgba(255,255,255,0.1);
-        font-style: italic;
-    }
     </style>
 """,
     unsafe_allow_html=True,
 )
 
 # ---------------------------------------------------------------------------
-# 5. Header
+# 5. Header Component
 # ---------------------------------------------------------------------------
 logo_html = (
     f'<img src="data:image/png;base64,{logo_b64}" style="max-width: 130px;'
@@ -350,55 +319,57 @@ st.markdown(
 
 tab_client, tab_admin = st.tabs(["🛒 Acheter un Pass", "🔒 Espace Administrateur"])
 
+
 # ---------------------------------------------------------------------------
-# 6. Client Tab
+# 6. Fragment for Non-Disruptive Client Polling
+# ---------------------------------------------------------------------------
+@st.fragment(run_every="6s")
+def render_order_status(order_idx):
+    with store["lock"]:
+        order = store["orders"][order_idx] if order_idx < len(store["orders"]) else None
+
+    if order is None:
+        if "current_order_id" in st.session_state:
+            del st.session_state.current_order_id
+        st.rerun()
+
+    with st.container(border=True):
+        st.write("### 🧾 Statut de votre commande")
+        st.write(f"**Client :** {order['Client']}")
+        st.write(f"**Forfait :** {order['Forfait']}")
+        st.write(f"**Référence SMS :** `{order['Ref']}`")
+
+        if order["Status"] == "Pending":
+            st.warning("⏳ **En attente de confirmation par Moïse...**")
+            st.info(
+                "Dès que Moïse aura vérifié le paiement Mobile Money, votre code"
+                " apparaîtra automatiquement ici."
+            )
+            if st.button("🔄 Rafraîchir le statut"):
+                st.rerun()
+        elif order["Status"] == "Approved":
+            st.success("✅ **Paiement confirmé ! Voici votre code d'accès Wi-Fi :**")
+            st.markdown(
+                f'<div class="code-box">{order["Code"]}</div>',
+                unsafe_allow_html=True,
+            )
+            st.caption("💡 *Saisissez ce code sur la page de connexion Wi-Fi Starlink.*")
+            if st.button("🛒 Passer une autre commande"):
+                del st.session_state.current_order_id
+                st.rerun()
+        else:
+            st.error("❌ Cette commande a été refusée. Veuillez contacter Moïse.")
+            if st.button("🛒 Passer une nouvelle commande"):
+                del st.session_state.current_order_id
+                st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# 7. Client Tab View
 # ---------------------------------------------------------------------------
 with tab_client:
     if "current_order_id" in st.session_state:
-        order_idx = st.session_state.current_order_id
-        with store["lock"]:
-            order = store["orders"][order_idx] if order_idx < len(store["orders"]) else None
-
-        if order is None:
-            del st.session_state.current_order_id
-            st.rerun()
-
-        with st.container(border=True):
-            st.write("### 🧾 Statut de votre commande")
-            st.write(f"**Client :** {order['Client']}")
-            st.write(f"**Forfait :** {order['Forfait']}")
-            st.write(f"**Référence SMS :** `{order['Ref']}`")
-
-            if order["Status"] == "Pending":
-                st.warning("⏳ **En attente de confirmation par Moïse...**")
-                st.info(
-                    "Dès que Moïse aura vérifié le paiement Mobile Money, votre code"
-                    " apparaîtra automatiquement ici."
-                )
-                if st.button("🔄 Rafraîchir le statut"):
-                    st.rerun()
-                # Passive auto-refresh every 6s so the client doesn't have to
-                # keep tapping the button while waiting.
-                st.markdown(
-                    '<meta http-equiv="refresh" content="6">',
-                    unsafe_allow_html=True,
-                )
-            elif order["Status"] == "Approved":
-                st.success("✅ **Paiement confirmé ! Voici votre code d'accès Wi-Fi :**")
-                st.markdown(
-                    f'<div class="code-box">{order["Code"]}</div>',
-                    unsafe_allow_html=True,
-                )
-                st.caption("💡 *Saisissez ce code sur la page de connexion Wi-Fi Starlink.*")
-                if st.button("🛒 Passer une autre commande"):
-                    del st.session_state.current_order_id
-                    st.rerun()
-            else:
-                st.error("❌ Cette commande a été refusée. Veuillez contacter Moïse.")
-                if st.button("🛒 Passer une nouvelle commande"):
-                    del st.session_state.current_order_id
-                    st.rerun()
-
+        render_order_status(st.session_state.current_order_id)
     else:
         with st.container(border=True):
             st.write("### 1. 🎫 Choisir un Pass Wi-Fi")
@@ -459,13 +430,18 @@ with tab_client:
                     st.warning("⚠️ Veuillez remplir tous les champs du formulaire.")
 
 # ---------------------------------------------------------------------------
-# 7. Admin Tab
+# 8. Admin Tab View
 # ---------------------------------------------------------------------------
 with tab_admin:
     st.write("### 🔒 Espace Administrateur")
+    admin_password = (
+        st.secrets.get("ADMIN_PASSWORD", "moise2026")
+        if hasattr(st, "secrets")
+        else "moise2026"
+    )
     pwd = st.text_input("Mot de passe de Moïse :", type="password")
 
-    if pwd.lower() == "moise2026":
+    if pwd == admin_password:
         st.success("🔓 Accès autorisé. Bienvenue, Moïse !")
         st.write("---")
         if st.button("🔄 Actualiser"):
@@ -555,15 +531,3 @@ with tab_admin:
                     store["sales"] = []
                     save_sales()
                 st.rerun()
-
-# ---------------------------------------------------------------------------
-# 8. Footer
-# ---------------------------------------------------------------------------
-st.markdown(
-    """
-    <div class="designer-footer">
-        Designed by Eliezer Nlandu
-    </div>
-""",
-    unsafe_allow_html=True,
-)
