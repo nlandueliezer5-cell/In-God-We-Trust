@@ -30,9 +30,9 @@ st.set_page_config(
 )
 
 APP_URL = (
-    st.secrets.get("APP_URL", "in-god-we-trust-6er82udqjawfqbkyzmohgl.streamlit.app")
+    st.secrets.get("APP_URL", "https://in-god-we-trust-6er82udqjawfqbkyzmohgl.streamlit.app/")
     if hasattr(st, "secrets")
-    else "https://igwt-wifi.streamlit.app"
+    else "https://in-god-we-trust-6er82udqjawfqbkyzmohgl.streamlit.app/"
 )
 
 NTFY_TOPIC = "igwt_wifi_moise_2026"
