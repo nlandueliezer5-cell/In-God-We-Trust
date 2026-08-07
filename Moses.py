@@ -30,7 +30,7 @@ st.set_page_config(
 )
 
 APP_URL = (
-    st.secrets.get("APP_URL", "https://igwt-wifi.streamlit.app")
+    st.secrets.get("APP_URL", "in-god-we-trust-6er82udqjawfqbkyzmohgl.streamlit.app")
     if hasattr(st, "secrets")
     else "https://igwt-wifi.streamlit.app"
 )
