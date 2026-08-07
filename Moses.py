@@ -2,12 +2,11 @@ import base64
 import datetime
 import random
 import string
-import urllib.parse
 import pandas as pd
 import requests
 import streamlit as st
 
-# 1. Configuration de la page
+# 1. Page Configuration
 st.set_page_config(
     page_title="IN GOD WE TRUST — Internet Starlink",
     page_icon="📡",
@@ -16,71 +15,78 @@ st.set_page_config(
 
 NTFY_TOPIC = "igwt_wifi_moise_2026"
 
-# Initialisation de la session
+# Session State Initialization
 if "pending_orders" not in st.session_state:
-    st.session_state.pending_orders = []
+  st.session_state.pending_orders = []
 
 if "sales_history" not in st.session_state:
-    st.session_state.sales_history = []
+  st.session_state.sales_history = []
 
 
 def generate_test_passwords(n=10):
-    return [
-        "PASS-"
-        + "".join(random.choices(string.ascii_uppercase + string.digits, k=5))
-        for _ in range(n)
-    ]
+  return [
+      "PASS-"
+      + "".join(random.choices(string.ascii_uppercase + string.digits, k=5))
+      for _ in range(n)
+  ]
 
 
 if "password_vault" not in st.session_state:
-    st.session_state.password_vault = generate_test_passwords(20)
+  st.session_state.password_vault = generate_test_passwords(20)
 
 
 def send_ntfy_push(client_name, plan, total, ref_id):
-    """Envoie une notification push via HTTP GET (plus fiable sur Streamlit Cloud)."""
-    try:
-        msg_text = f"Client: {client_name} | Pass: {plan} ({total:,} FC) | Ref: {ref_id}"
-        encoded_msg = urllib.parse.quote(msg_text)
-        url = f"https://ntfy.sh/{NTFY_TOPIC}/publish?message={encoded_msg}&title=Nouvelle+Commande&tags=moneybag,wifi"
+  """Sends push notification with explicit User-Agent to prevent Cloud blocking."""
+  try:
+    url = f"https://ntfy.sh/{NTFY_TOPIC}"
+    payload = f"Client: {client_name}\nPass: {plan} ({total:,} FC)\nRef: {ref_id}"
 
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            st.toast("🔔 Notification envoyée à Moïse !", icon="📲")
-        else:
-            st.toast(f"⚠️ Ntfy Code: {res.status_code}")
-    except Exception as e:
-        st.toast(f"⚠️ Erreur notification: {e}")
+    headers = {
+        "Title": "📡 IGWT — Nouvelle Commande !",
+        "Priority": "high",
+        "Tags": "moneybag,wifi",
+        "User-Agent": "IGWT-Starlink-App/1.0",
+    }
+
+    res = requests.post(
+        url, data=payload.encode("utf-8"), headers=headers, timeout=5
+    )
+    if res.status_code == 200:
+      st.toast("🔔 Notification transmise à Moïse !", icon="✅")
+    else:
+      st.toast(f"⚠️ Erreur Ntfy Code {res.status_code}", icon="❌")
+  except Exception as e:
+    st.toast(f"⚠️ Erreur réseau: {e}", icon="❌")
 
 
 def get_base64_image(image_path):
-    try:
-        with open(image_path, "rb") as img_file:
-            return base64.b64encode(img_file.read()).decode()
-    except Exception:
-        return None
+  try:
+    with open(image_path, "rb") as img_file:
+      return base64.b64encode(img_file.read()).decode()
+  except Exception:
+    return None
 
 
 logo_b64 = get_base64_image("IGWT_logo.png")
 
-# 2. Styles CSS Adaptatifs (Thème Clair & Sombre)
+# 2. Complete CSS Fix (Locks Dark Theme & Text Contrast)
 st.markdown(
     """
     <style>
-    /* Carte d'en-tête (Fixe et élégante) */
+    /* Force main dark background */
+    .stApp {
+        background-color: #0b132b !important;
+    }
+    
+    /* Header Card */
     .header-card {
         background: linear-gradient(135deg, #0a1128 0%, #1c2541 100%);
         border: 2px solid #00b4d8;
-        border-radius: 20px;
+        border-radius: 18px;
         padding: 20px;
         text-align: center;
         box-shadow: 0 8px 32px 0 rgba(0, 180, 216, 0.25);
         margin-bottom: 20px;
-    }
-    .header-card h1 {
-        color: #ffffff !important;
-    }
-    .header-card p {
-        color: #00b4d8 !important;
     }
     
     .status-badge {
@@ -93,16 +99,32 @@ st.markdown(
         display: inline-block;
     }
     
-    /* Carte gérant adaptative */
+    /* Info Card */
     .info-card {
-        background: rgba(0, 180, 216, 0.1);
+        background: #1c2541;
         border-left: 5px solid #00b4d8;
         border-radius: 10px;
         padding: 14px 18px;
         margin-bottom: 20px;
+        color: #ffffff !important;
     }
     
-    /* Code d'accès Wi-Fi */
+    /* CUSTOM NUMBER DISPLAY BOX (Replaces st.code to fix white text issue) */
+    .number-display-box {
+        background-color: #0a1128 !important;
+        border: 2px dashed #00b4d8 !important;
+        border-radius: 10px !important;
+        padding: 14px !important;
+        text-align: center !important;
+        font-family: monospace !important;
+        font-size: 24px !important;
+        font-weight: bold !important;
+        color: #ffd700 !important;
+        letter-spacing: 2px !important;
+        margin: 10px 0 !important;
+    }
+
+    /* WiFi Password display box */
     .code-box {
         background: #10b981;
         color: #000000 !important;
@@ -115,7 +137,7 @@ st.markdown(
         margin: 15px 0;
     }
     
-    /* Boutons universels toujours visibles */
+    /* Buttons */
     div.stButton > button {
         background: linear-gradient(90deg, #00b4d8 0%, #0077b6 100%) !important;
         color: #ffffff !important;
@@ -123,7 +145,7 @@ st.markdown(
         font-size: 16px !important;
         border-radius: 10px !important;
         border: none !important;
-        padding: 10px 20px !important;
+        padding: 12px 20px !important;
         width: 100% !important;
         box-shadow: 0 4px 12px rgba(0, 180, 216, 0.3) !important;
     }
@@ -137,10 +159,10 @@ st.markdown(
     .designer-footer {
         text-align: center;
         font-size: 12px;
-        opacity: 0.7;
+        color: #94a3b8 !important;
         margin-top: 40px;
         padding-top: 15px;
-        border-top: 1px solid rgba(150,150,150,0.2);
+        border-top: 1px solid rgba(255,255,255,0.1);
         font-style: italic;
     }
     </style>
@@ -148,7 +170,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# 3. En-tête Principal
+# 3. Header
 logo_html = (
     f'<img src="data:image/png;base64,{logo_b64}" style="max-width: 130px;'
     ' margin-bottom: 10px;" /><br>'
@@ -160,8 +182,8 @@ st.markdown(
     f"""
     <div class="header-card">
         {logo_html}
-        <h1 style="margin:0; font-size: 26px;">IN GOD WE TRUST</h1>
-        <p style="font-weight: 600; margin-top: 5px; margin-bottom: 12px;">
+        <h1 style="margin:0; font-size: 26px; color:#ffffff;">IN GOD WE TRUST</h1>
+        <p style="font-weight: 600; margin-top: 5px; margin-bottom: 12px; color:#00b4d8;">
             ⚡ Service Internet Satellite Starlink Haute Vitesse
         </p>
         <span class="status-badge">🟢 RÉSEAU EN LIGNE • ACTIF</span>
@@ -170,13 +192,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Carte Propriétaire
+# Manager Details
 st.markdown(
     """
     <div class="info-card">
         <p style="margin: 0; font-size: 13px; font-weight: bold; color: #00b4d8;">👤 GÉRANT & PROPRIÉTAIRE</p>
-        <p style="margin: 2px 0; font-size: 16px; font-weight: bold;">Mugisa Bakebuga Moïse</p>
-        <p style="margin: 0; font-size: 13px;">
+        <p style="margin: 2px 0; font-size: 16px; font-weight: bold; color:#ffffff;">Mugisa Bakebuga Moïse</p>
+        <p style="margin: 0; font-size: 13px; color:#cbd5e1;">
             📍 <b>Adresse :</b> Près de la station Andama (sur la route principale), Ghiro, Haut-Uele.<br>
             📞 <b>M-Pesa :</b> 0833890033
         </p>
@@ -185,10 +207,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# 4. Navigation
+# 4. Navigation Tabs
 tab_client, tab_admin = st.tabs(["🛒 Acheter un Pass", "🔒 Espace Administrateur"])
 
-# --- ONGLET 1 : CLIENT ---
+# --- TAB 1: CLIENT ---
 with tab_client:
   if "current_order_id" in st.session_state:
     order_idx = st.session_state.current_order_id
@@ -244,11 +266,17 @@ with tab_client:
     with st.container(border=True):
       st.write("### 2. 📲 Effectuer le Paiement M-Pesa")
       st.write("Envoyez le montant exact au numéro M-Pesa ci-dessous :")
-      st.code("0833890033", language="text")
-      st.caption(
-          "💡 *Cliquez sur le bouton de copie à droite dans le rectangle"
-          " ci-dessus.*"
+
+      # HTML BOX INSTEAD OF st.code TO FIX WHITE-ON-WHITE ISSUE
+      st.markdown(
+          """
+            <div class="number-display-box">
+                0833890033
+            </div>
+            """,
+          unsafe_allow_html=True,
       )
+      st.caption("💡 *Saisissez ce numéro dans votre menu M-Pesa (*112#).*")
 
     with st.container(border=True):
       st.write("### 3. 📝 Valider la Commande")
@@ -290,7 +318,7 @@ with tab_client:
         else:
           st.warning("⚠️ Veuillez remplir tous les champs du formulaire.")
 
-# --- ONGLET 2 : ADMIN ---
+# --- TAB 2: ADMIN ---
 with tab_admin:
   st.write("### 🔒 Espace Administrateur")
   pwd = st.text_input("Mot de passe de Moïse :", type="password")
@@ -369,7 +397,7 @@ with tab_admin:
         st.session_state.sales_history = []
         st.rerun()
 
-# Pied de page
+# Footer
 st.markdown(
     """
     <div class="designer-footer">
